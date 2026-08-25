@@ -17,7 +17,7 @@ jobs:
 
       - name: 2. Create Admin Account
         run: |
-          $Password = ConvertTo-SecureString "Amir2026" -AsPlainText -Force
+          $Password = ConvertTo-SecureString "Amirrr2026" -AsPlainText -Force
           New-LocalUser -Name "AmirAdmin" -Password $Password -PasswordNeverExpires -ErrorAction SilentlyContinue
           Add-LocalGroupMember -Group "Administrators" -Member "AmirAdmin" -ErrorAction SilentlyContinue
           net user runneradmin AmirAdmin
@@ -44,7 +44,7 @@ jobs:
           Write-Host "  >>> RDP SERVER IS READY! <<<" -ForegroundColor Cyan
           Write-Host "  Tailscale IP : $ts_ip" -ForegroundColor Yellow
           Write-Host "  Username     : Amir2026" -ForegroundColor Yellow
-          Write-Host "  Password     : AmirAdmin" -ForegroundColor Yellow
+          Write-Host "  Password     : AmirrrAdmin" -ForegroundColor Yellow
           Write-Host "  >> Open mstsc and connect to: $ts_ip" -ForegroundColor Magenta
           Write-Host "==================================================" -ForegroundColor Green
 
