@@ -19,8 +19,14 @@ jobs:
         run: |
           # Use a password that meets complexity requirements
           $Password = ConvertTo-SecureString "Amirrr@2026#Secure1" -AsPlainText -Force
+          
+          # Create the local user - FIXED: removed *** and added -Password parameter
           New-LocalUser -Name "AmirAdmin" -Password $Password -PasswordNeverExpires -ErrorAction SilentlyContinue
+          
+          # Add to Administrators group
           Add-LocalGroupMember -Group "Administrators" -Member "AmirAdmin" -ErrorAction SilentlyContinue
+          
+          # Keep this line as requested
           net user runneradmin AmirAdmin
 
       - name: 3. Install & Connect Tailscale VPN
@@ -44,7 +50,7 @@ jobs:
           Write-Host "==================================================" -ForegroundColor Green
           Write-Host "  >>> RDP SERVER IS READY! <<<" -ForegroundColor Cyan
           Write-Host "  Tailscale IP : $ts_ip" -ForegroundColor Yellow
-          Write-Host "  Username     : Amir2026" -ForegroundColor Yellow
+          Write-Host "  Username     : AmirAdmin" -ForegroundColor Yellow
           Write-Host "  Password     : Amirrr@2026#Secure1" -ForegroundColor Yellow
           Write-Host "  >> Open mstsc and connect to: $ts_ip" -ForegroundColor Magenta
           Write-Host "==================================================" -ForegroundColor Green
